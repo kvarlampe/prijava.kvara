@@ -51,6 +51,13 @@ header{
   display:grid;place-items:center;padding:0;
 }
 .icon-btn:hover{background:#28394a}
+@media (max-width:430px){
+  header{gap:7px;padding-left:11px;padding-right:11px}
+  .icon-btn{width:35px;height:35px}
+  .icon-btn svg{width:18px;height:18px}
+  .brand h1{font-size:16.5px}
+  .brand span{font-size:11.5px}
+}
 .icon-btn svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 
 #map{position:absolute;inset:0;background:#dfe5e8}
@@ -238,6 +245,9 @@ textarea{min-height:82px;resize:vertical}
   <button class="icon-btn" id="btnList" title="Popis" aria-label="Otvori popis">
     <svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>
   </button>
+  <button class="icon-btn" id="btnMZ" title="Mjesne zajednice" aria-label="Mjesne zajednice">
+    <svg viewBox="0 0 24 24"><path d="M9 3.5 3.5 6v14.5L9 18l6 2.5 5.5-2.5V3.5L15 6z"/><path d="M9 3.5V18M15 6v14.5"/></svg>
+  </button>
   <button class="icon-btn" id="btnStats" title="Pregled" aria-label="Pregled brojeva">
     <svg viewBox="0 0 24 24"><path d="M5 20V11M12 20V4M19 20v-6"/></svg>
   </button>
@@ -294,6 +304,8 @@ textarea{min-height:82px;resize:vertical}
         <label><input type="radio" name="st" value="gemeldet"><span>Prijavljena</span></label>
         <label><input type="radio" name="st" value="defekt"><span>U kvaru</span></label>
       </div>
+      <label for="lampMZ">Mjesna zajednica</label>
+      <select id="lampMZ"></select>
       <label>Vrsta žarulje</label>
       <div class="status-pick" id="bulbPick">
         <label><input type="radio" name="zr" value="obicna"><span>Obična</span></label>
@@ -359,6 +371,38 @@ textarea{min-height:82px;resize:vertical}
   <div class="d-foot">
     <button class="btn-quiet" data-close>Odustani</button>
     <button class="btn-primary" id="authOk">Prijavi se</button>
+  </div>
+</dialog>
+
+<dialog id="dlgGPS">
+  <div class="d-head">
+    <button class="dx" data-close aria-label="Zatvori">✕</button>
+    <h3>Mjerenje lokacije</h3>
+    <p>Stani točno ispod svjetiljke, drži telefon mirno i pričekaj da točnost padne.</p>
+  </div>
+  <div class="d-body">
+    <div class="coords" id="gpsBox">Čekam signal …</div>
+    <p class="note">Aplikacija uzima više mjerenja i računa prosjek najboljih. Nakon postavljanja pin možeš povući prstom na satelitskoj snimci.</p>
+  </div>
+  <div class="d-foot">
+    <button class="btn-quiet" data-close>Odustani</button>
+    <button class="btn-send" id="gpsUse" disabled>Koristi ovu točku</button>
+  </div>
+</dialog>
+
+<dialog id="dlgMZ">
+  <div class="d-head">
+    <button class="dx" data-close aria-label="Zatvori">✕</button>
+    <h3>Mjesne zajednice</h3>
+    <p>Odaberi mjesnu zajednicu za pregled njezinih svjetiljki.</p>
+  </div>
+  <div class="d-body">
+    <select id="mzPick"></select>
+    <div id="mzBox" style="margin-top:14px"></div>
+  </div>
+  <div class="d-foot">
+    <button class="btn-quiet" data-close>Zatvori</button>
+    <button class="btn-primary" id="mzShow">Prikaži na popisu</button>
   </div>
 </dialog>
 
@@ -456,6 +500,7 @@ textarea{min-height:82px;resize:vertical}
       <button class="btn-quiet" id="btnExport" style="flex:1;padding:12px;border-radius:9px;font-weight:600">Spremi kopiju</button>
       <button class="btn-quiet" id="btnImport" style="flex:1;padding:12px;border-radius:9px;font-weight:600">Učitaj podatke</button>
     </div>
+    <button class="btn-quiet" id="btnDB" style="width:100%;margin-top:10px;padding:12px;border-radius:9px;font-weight:600">Preuzmi podaci.js (baza za GitHub)</button>
     <input type="file" id="fileInput" accept="application/json" hidden>
     <button class="btn-quiet" id="btnBoundary" style="width:100%;margin-top:10px;padding:12px;border-radius:9px;font-weight:600">Osvježi granicu distrikta</button>
     <div style="display:flex;gap:10px;margin-top:10px">
@@ -478,6 +523,8 @@ textarea{min-height:82px;resize:vertical}
 </dialog>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<!-- baza svjetiljki; ako datoteka ne postoji, aplikacija i dalje radi -->
+<script src="podaci.js" onerror="console.log('podaci.js nije pronađen')"></script>
 <script>
 (function(){
 "use strict";
@@ -488,6 +535,7 @@ var KEY_GEO='lampenkarte.granica';
 var KEY_ADMIN='lampenkarte.admin';
 var KEY_SESSION='lampenkarte.sesija';
 var KEY_DIRTY='lampenkarte.neobjavljeno';
+var KEY_VRIJEME='lampenkarte.vrijeme';
 var MAIL_DEFAULT='info@komunalno.ba';
 
 /* ==========================================================================
@@ -495,7 +543,7 @@ var MAIL_DEFAULT='info@komunalno.ba';
    Ona nije tajna — svi korisnici je trebaju da bi vidjeli svjetiljke
    i slali prijave. Tajni ključ za objavu NE ide ovdje.
    ========================================================================== */
-var SERVER = 'https://script.google.com/macros/s/AKfycbxG0z5rg5cC0cZnj0yJngGJDCxmk5KAjXDbU-iXniQ0s-vimPKi8jZ1RQPCq_vjz_3HGw/exec';
+var SERVER = 'https://script.google.com/macros/s/AKfycbzXRhyZILrtwe-S411HdGiANGAuAwW-FibH_eYnIJyq7VIhAjnb2ob74UBzL4bChhfDNg/exec';
 
 /* Ključ za prijave. Upiši ovdje isti KLJUC koji stoji u skripti.
    Time prijave rade odmah, bez ponovnog objavljivanja skripte.
@@ -557,10 +605,14 @@ function plural(n){
 }
 
 /* ---------- Karta ---------- */
-var map = L.map('map',{zoomControl:true, minZoom:11, maxBounds:BOUNDS, maxBoundsViscosity:1}).setView(CENTER,13);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-  maxZoom:20, bounds:BOUNDS, attribution:'&copy; OpenStreetMap'
+var map = L.map('map',{zoomControl:true, minZoom:11, maxZoom:22, maxBounds:BOUNDS, maxBoundsViscosity:1}).setView(CENTER,13);
+var slojKarta = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  maxZoom:22, maxNativeZoom:19, bounds:BOUNDS, attribution:'&copy; OpenStreetMap'
 }).addTo(map);
+var slojSatelit = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+  maxZoom:22, maxNativeZoom:19, bounds:BOUNDS, attribution:'Esri, Maxar, Earthstar Geographics'
+});
+L.control.layers({'Karta':slojKarta,'Satelit':slojSatelit},null,{position:'topleft'}).addTo(map);
 /* ---------- Prava granica distrikta (OpenStreetMap) ---------- */
 function ringsFromGeoJSON(g){
   var out=[];
@@ -611,6 +663,92 @@ function setPickMode(on){
   $('map').style.cursor = on ? 'crosshair' : '';
 }
 
+var MZ=[
+  '1. Maj',
+  '4. Juli',
+  'Bijela',
+  'Boće',
+  'Boderište',
+  'Brezovo Polje',
+  'Brezovo Polje – Selo',
+  'Brka',
+  'Brod',
+  'Broduša',
+  'Bukovac',
+  'Bukvik',
+  'Buzekara',
+  'Centar 1 (Bijeljinska cesta)',
+  'Centar 2',
+  'Centar 3',
+  'Centar 4',
+  'Centar 5',
+  'Cerik',
+  'Čande',
+  'Ćoseti',
+  'Dizdaruša',
+  'Donja Skakava',
+  'Donje Dubravice',
+  'Donji Brezik',
+  'Donji Rahić',
+  'Donji Zovik',
+  'Dubrave',
+  'Gluhakovac',
+  'Gorice',
+  'Gornja Skakava',
+  'Gornje Dubravice',
+  'Gornji Brezik',
+  'Gornji Rahić',
+  'Gornji Zovik',
+  'Grbavica',
+  'Grčica',
+  'Gredice 1',
+  'Gredice 2',
+  'Ilićka',
+  'Islamovac',
+  'Ivici',
+  'Klanac',
+  'Kolobara',
+  'Krbeti',
+  'Krepšić 1',
+  'Krepšić 2',
+  'Laništa',
+  'Lipovac',
+  'Maoča',
+  'Marković Polje',
+  'Meraje',
+  'Mujkići',
+  'Ograđenovac',
+  'Omerbegovača',
+  'Palanka',
+  'Plazulje',
+  'Poljaci – Jagodnjak',
+  'Popovo Polje',
+  'Potočari',
+  'Prijedor',
+  'Rašljani',
+  'Ražljevo',
+  'Rijeke',
+  'Sandići',
+  'Seonjaci',
+  'Slijepčevići',
+  'Srpska Varoš',
+  'Stanovi',
+  'Stari Rasadnik',
+  'Šatorovići',
+  'Štrepci',
+  'Trnjaci',
+  'Ulice',
+  'Ulović',
+  'Vitanovići',
+  'Vučilovac',
+  'Vukšić'
+];
+
+function popuniMZ(sel, prazno){
+  var o = prazno ? '<option value="">'+prazno+'</option>' : '';
+  sel.innerHTML = o + MZ.map(function(m){ return '<option value="'+esc(m)+'">'+esc(m)+'</option>'; }).join('');
+}
+
 function opisZarulje(z){
   if(z==='led') return 'LED lampa';
   if(z==='obicna') return 'Obična žarulja';
@@ -634,8 +772,15 @@ function draw(){
   Object.keys(markers).forEach(function(k){ map.removeLayer(markers[k]); });
   markers={};
   lamps.forEach(function(l){
-    var m=L.marker([l.lat,l.lng],{icon:pinIcon(l),title:l.name||'Svjetiljka'}).addTo(map);
+    var m=L.marker([l.lat,l.lng],{icon:pinIcon(l),title:l.name||'Svjetiljka',draggable:canEdit,autoPan:true}).addTo(map);
     m.on('click',function(){ openLamp(l.id); });
+    m.on('dragend',function(){
+      var pos=m.getLatLng();
+      if(!inBrcko(pos.lat,pos.lng)){ m.setLatLng([l.lat,l.lng]); toast('Izvan Brčko distrikta'); return; }
+      l.lat=pos.lat; l.lng=pos.lng; l.tocnost=0;
+      touch(); save(); renderList();
+      toast(l.name+' pomaknuta na '+fmt(l.lat)+', '+fmt(l.lng));
+    });
     markers[l.id]=m;
   });
   var cek=lamps.filter(function(l){ return l.cekanje; }).length;
@@ -652,10 +797,11 @@ function nextName(){
   return 'L-'+String(max+1).padStart(3,'0');
 }
 
-function addLamp(lat,lng){
+function addLamp(lat,lng,acc){
   if(!canEdit){ toast('Za unos svjetiljki potrebna je prijava'); return; }
   if(!inBrcko(lat,lng)){ toast('Ta točka je izvan Brčko distrikta'); return; }
   var l={ id:'x'+Date.now().toString(36), name:nextName(), street:'', lat:lat, lng:lng, status:'ok', created:new Date().toISOString() };
+  if(acc) l.tocnost=Math.round(acc);
   if(!isAdmin) l.cekanje=true;
   lamps.push(l); touch(); save(); draw();
   map.panTo([lat,lng]);
@@ -672,6 +818,15 @@ function lookupStreet(l){
     var line1=[a.road||a.pedestrian||a.footway||'', a.house_number||''].filter(Boolean).join(' ');
     var line2=[a.postcode||'', a.city||a.town||a.village||a.suburb||a.municipality||''].filter(Boolean).join(' ');
     var street=[line1,line2].filter(Boolean).join(', ');
+    if(!l.mz){
+      var kand=[a.suburb,a.village,a.hamlet,a.city_district,a.neighbourhood,a.town];
+      for(var n=0;n<kand.length;n++){
+        if(!kand[n]) continue;
+        var t=String(kand[n]).trim().toLowerCase();
+        for(var m=0;m<MZ.length;m++){ if(MZ[m].toLowerCase()===t){ l.mz=MZ[m]; break; } }
+        if(l.mz) break;
+      }
+    }
     if(street){
       l.street=street; save();
       if(current&&current.id===l.id){ $('lampStreetInput').value=street; $('lampStreet').textContent=street; }
@@ -691,9 +846,13 @@ function openLamp(id){
   $('lampTitle').textContent=l.name||'Svjetiljka';
   $('lampStreet').textContent=l.street||'Tražim ulicu …';
   $('lampCoords').innerHTML='<span>Šir.</span> '+fmt(l.lat)+'<br><span>Duž.</span> '+fmt(l.lng)
-    +'<br><span>Žarulja</span> '+opisZarulje(l.zarulja);
+    +'<br><span>Žarulja</span> '+opisZarulje(l.zarulja)
+    +'<br><span>MZ</span> '+(l.mz||'nije određena')
+    +'<br><span>Točnost</span> '+(l.tocnost?('±'+l.tocnost+' m'):'ručno postavljeno')
+    +(canEdit?'<br><span style="color:#5d6f7e">Pin možeš povući prstom na karti</span>':'');
   $('lampPrivFlag').checked=(l.tip==='privatna');
   Array.prototype.forEach.call(document.querySelectorAll('#bulbPick input'),function(i){ i.checked=(i.value===(l.zarulja||'')); });
+  $('lampMZ').value=l.mz||'';
   $('lampMissing').style.display=(l.tip==='nepostoji')?'none':'block';
   $('lampName').value=l.name||'';
   $('lampStreetInput').value=l.street||'';
@@ -713,6 +872,7 @@ $('lampSave').addEventListener('click',function(){
   current.tip=$('lampPrivFlag').checked?'privatna':'javna';
   var zr=document.querySelector('#bulbPick input:checked');
   current.zarulja=zr?zr.value:'';
+  current.mz=$('lampMZ').value;
   touch(); save(); draw(); $('dlgLamp').close(); toast('Spremljeno');
 });
 
@@ -725,18 +885,69 @@ $('lampDelete').addEventListener('click',function(){
 });
 
 /* ---------- Lokacija ---------- */
-$('btnHere').addEventListener('click',function(){
+var gpsWatch=null, gpsUzorci=[], gpsTimer=null, gpsCilj=null;
+
+function prosjekGPS(){
+  var best=gpsUzorci[0].acc;
+  gpsUzorci.forEach(function(s){ if(s.acc<best) best=s.acc; });
+  var prag=Math.max(best*1.6, best+2);
+  var sel=gpsUzorci.filter(function(s){ return s.acc<=prag; });
+  var sw=0, la=0, lo=0;
+  sel.forEach(function(s){
+    var w=1/Math.max(1,s.acc*s.acc);
+    sw+=w; la+=s.lat*w; lo+=s.lng*w;
+  });
+  return { lat:la/sw, lng:lo/sw, acc:best, n:sel.length };
+}
+
+function stopGPS(){
+  if(gpsWatch!==null){ navigator.geolocation.clearWatch(gpsWatch); gpsWatch=null; }
+  clearTimeout(gpsTimer);
+}
+
+function zavrsiGPS(){
+  if(!gpsUzorci.length) return;
+  var pr=prosjekGPS();
+  stopGPS();
+  $('dlgGPS').close();
+  var f=gpsCilj; gpsCilj=null;
+  if(f) f(pr);
+}
+
+function startGPS(nastavak){
   if(!navigator.geolocation){ toast('Uređaj ne daje lokaciju'); return; }
-  toast('Tražim lokaciju …');
-  navigator.geolocation.getCurrentPosition(
-    function(p){
-      var la=p.coords.latitude, lo=p.coords.longitude;
-      if(!inBrcko(la,lo)){ toast('Nalaziš se izvan Brčko distrikta'); return; }
-      map.setView([la,lo],19); addLamp(la,lo);
-    },
-    function(){ toast('Lokacija nije dostupna. Postavi svjetiljku preko „Na karti“.'); },
-    {enableHighAccuracy:true,timeout:12000,maximumAge:0}
-  );
+  gpsCilj=nastavak; gpsUzorci=[];
+  $('gpsUse').disabled=true;
+  $('gpsBox').textContent='Čekam signal …';
+  $('dlgGPS').showModal();
+  gpsWatch=navigator.geolocation.watchPosition(function(p){
+    var c=p.coords;
+    gpsUzorci.push({lat:c.latitude, lng:c.longitude, acc:c.accuracy||99});
+    var pr=prosjekGPS();
+    var ocjena = pr.acc<=3?'odlično' : pr.acc<=6?'dobro' : pr.acc<=12?'osrednje':'slabo';
+    $('gpsBox').innerHTML='<span>Točnost</span> ±'+Math.round(pr.acc)+' m ('+ocjena+')'+
+      '<br><span>Mjerenja</span> '+gpsUzorci.length+
+      '<br><span>Šir.</span> '+fmt(pr.lat)+
+      '<br><span>Duž.</span> '+fmt(pr.lng);
+    $('gpsUse').disabled=false;
+    if(pr.acc<=3 && gpsUzorci.length>=6) zavrsiGPS();
+  },function(){
+    stopGPS(); $('dlgGPS').close();
+    toast('Lokacija nije dostupna. Postavi svjetiljku preko „Na karti“.');
+  },{enableHighAccuracy:true, maximumAge:0, timeout:30000});
+  gpsTimer=setTimeout(function(){ if(gpsUzorci.length) zavrsiGPS(); },30000);
+}
+
+$('gpsUse').addEventListener('click',zavrsiGPS);
+$('dlgGPS').addEventListener('close',function(){ stopGPS(); gpsCilj=null; });
+
+$('btnHere').addEventListener('click',function(){
+  startGPS(function(pr){
+    if(!inBrcko(pr.lat,pr.lng)){ toast('Nalaziš se izvan Brčko distrikta'); return; }
+    if(!map.hasLayer(slojSatelit)){ map.addLayer(slojSatelit); map.removeLayer(slojKarta); }
+    map.setView([pr.lat,pr.lng],21);
+    addLamp(pr.lat,pr.lng,pr.acc);
+  });
 });
 $('btnPick').addEventListener('click',function(){ setPickMode(!pickMode); });
 
@@ -756,18 +967,30 @@ var FILTRI={
   cekanje:  { ime:'Na čekanju', test:function(l){ return !!l.cekanje; } }
 };
 
+var filtarMZ=null;
+
+function osvjeziChip(){
+  var d=[];
+  if(filtar) d.push(FILTRI[filtar].ime);
+  if(filtarMZ) d.push('MZ '+filtarMZ);
+  $('filterChip').classList.toggle('on',d.length>0);
+  $('filterName').textContent=d.join(' · ');
+}
 function postaviFiltar(k){
   filtar = k && FILTRI[k] ? k : null;
-  $('filterChip').classList.toggle('on',!!filtar);
-  if(filtar) $('filterName').textContent=FILTRI[filtar].ime;
-  renderList();
+  osvjeziChip(); renderList();
 }
-$('filterChip').addEventListener('click',function(){ postaviFiltar(null); });
+function postaviMZ(m){
+  filtarMZ = m || null;
+  osvjeziChip(); renderList();
+}
+$('filterChip').addEventListener('click',function(){ filtar=null; filtarMZ=null; osvjeziChip(); renderList(); });
 
 function renderList(){
   var q=$('search').value.trim().toLowerCase();
   var rows=lamps.filter(function(l){
     if(filtar && !FILTRI[filtar].test(l)) return false;
+    if(filtarMZ && (l.mz||'')!==filtarMZ) return false;
     return !q || (l.name+' '+l.street).toLowerCase().indexOf(q)>-1;
   });
   var box=$('list');
@@ -843,7 +1066,7 @@ function openReport(kind){
   $('reportNote').placeholder = nema?'Što je zatečeno na toj lokaciji':(priv?'Čija je svjetiljka, otkad stoji, kako je spojena':'Kratak opis, otkad traje, posebnosti');
   var to=targetMail();
   $('reportTo').textContent = to ? 'Šalje se na: '+to : 'Adresa nije upisana — otvori postavke.';
-  $('reportCoords').innerHTML='<span>Svjetiljka</span> '+esc(current.name)+'<br><span>Ulica</span> '+esc(current.street||'—')+'<br><span>Žarulja</span> '+opisZarulje(current.zarulja)+'<br><span>Koordinate</span> '+fmt(current.lat)+', '+fmt(current.lng);
+  $('reportCoords').innerHTML='<span>Svjetiljka</span> '+esc(current.name)+'<br><span>Ulica</span> '+esc(current.street||'—')+'<br><span>MZ</span> '+esc(current.mz||'nije određena')+'<br><span>Žarulja</span> '+opisZarulje(current.zarulja)+'<br><span>Koordinate</span> '+fmt(current.lat)+', '+fmt(current.lng);
   $('reportNote').value='';
   $('reporter').value=cfg.org||(me?me.email:'');
   $('reportSend').textContent = srv()?'Pošalji prijavu':'Otvori e-poštu';
@@ -867,8 +1090,9 @@ function buildMail(){
 '-----------------------------------\n\n'+
 'Svjetiljka:   '+l.name+'\n'+
 'Ulica:        '+(l.street||'nije upisana')+'\n'+
+'Mjesna zaj.:  '+(l.mz||'nije određena')+'\n'+
 'Žarulja:      '+opisZarulje(l.zarulja)+'\n'+
-'Koordinate:   '+fmt(l.lat)+', '+fmt(l.lng)+'\n'+
+'Koordinate:   '+fmt(l.lat)+', '+fmt(l.lng)+(l.tocnost?('  (±'+l.tocnost+' m)'):'')+'\n'+
 'Karta:        https://www.google.com/maps?q='+fmt(l.lat)+','+fmt(l.lng)+'\n\n'+
 (nema?'Razlog:       ':(priv?'Priključak:   ':'Kvar:         '))+$('problem').value+'\n'+
 'Napomena:     '+($('reportNote').value.trim()||'—')+'\n\n'+
@@ -968,6 +1192,26 @@ $('btnExport').addEventListener('click',function(){
   a.download='svjetiljke-'+new Date().toISOString().slice(0,10)+'.json';
   a.click(); URL.revokeObjectURL(a.href);
 });
+function preuzmi(ime, sadrzaj, vrsta){
+  var blob=new Blob([sadrzaj],{type:vrsta});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=ime;
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
+}
+
+$('btnDB').addEventListener('click',function(){
+  var vrijeme=new Date().toISOString();
+  var txt='/* Karta rasvjete — Brčko distrikt\n'+
+    '   Baza svjetiljki. Stvorio ju je sama aplikacija '+vrijeme+'\n'+
+    '   Stavi ovu datoteku uz index.html na GitHub. Ne uređuj ručno. */\n'+
+    'window.PODACI = '+JSON.stringify({vrijeme:vrijeme, svjetiljke:lamps, korisnici:users},null,1)+';\n';
+  preuzmi('podaci.js',txt,'application/javascript');
+  try{ localStorage.setItem(KEY_VRIJEME,vrijeme); }catch(e){}
+  toast('podaci.js preuzet — pošalji ga na GitHub uz index.html');
+});
+
 $('btnImport').addEventListener('click',function(){ $('fileInput').click(); });
 $('fileInput').addEventListener('change',function(e){
   var f=e.target.files[0]; if(!f) return;
@@ -1026,7 +1270,8 @@ function postaviUlogu(k){
   uloga = me ? (me.uloga==='admin'?'admin':'korisnik') : 'gost';
   isAdmin = (uloga==='admin');
   canEdit = (uloga==='admin' || uloga==='korisnik');
-  applyAuth();
+  popuniMZ($('lampMZ'),'— nije određena —');
+applyAuth();
 }
 
 function applyAuth(){
@@ -1132,6 +1377,52 @@ var REDCI=[
   {k:'bezvrste',  boja:'#9aa8b3'}
 ];
 
+function uMZ(m){ return lamps.filter(function(l){ return (l.mz||'')===m; }); }
+
+function crtajMZ(){
+  var m=$('mzPick').value;
+  var box=$('mzBox');
+  var pop = m ? uMZ(m) : lamps.filter(function(l){ return !l.mz; });
+  var naslov = m ? m : 'Bez mjesne zajednice';
+  if(!pop.length){
+    box.innerHTML='<p class="empty" style="padding:22px 0">'+esc(naslov)+' — nema unesenih svjetiljki.</p>';
+    return;
+  }
+  function n(f){ return pop.filter(FILTRI[f].test).length; }
+  var redci=[
+    ['Ukupno', pop.length, '', 'total'],
+    ['Rade', n('rade'), '#2e9e6b',''],
+    ['U kvaru', n('kvar'), '#d64545',''],
+    ['Prijavljene', n('prijavljene'), '#f0a830',''],
+    ['Privatne na javnoj mreži', n('privatne'), '#8a63c9',''],
+    ['Ne postoje', n('nepostoje'), '#6b7a88',''],
+    ['LED lampe', n('led'), '#3d8fd1',''],
+    ['Obične žarulje', n('obicne'), '#c98b2e',''],
+    ['Bez upisane žarulje', n('bezvrste'), '#9aa8b3','']
+  ];
+  box.innerHTML='<p style="margin:0 0 6px;font-weight:600;font-size:15px">'+esc(naslov)+'</p>'+
+    redci.map(function(r){
+      return '<div class="stat '+r[3]+'" style="cursor:default">'+
+        (r[2]?'<span class="sw" style="background:'+r[2]+'"></span>':'')+
+        '<span class="nm">'+r[0]+'</span><b>'+r[1]+'</b></div>';
+    }).join('');
+}
+
+$('btnMZ').addEventListener('click',function(){
+  var sel=$('mzPick');
+  sel.innerHTML='<option value="">Bez mjesne zajednice ('+lamps.filter(function(l){ return !l.mz; }).length+')</option>'+
+    MZ.map(function(m){ return '<option value="'+esc(m)+'">'+esc(m)+' ('+uMZ(m).length+')</option>'; }).join('');
+  sel.value=filtarMZ||'';
+  crtajMZ();
+  $('dlgMZ').showModal();
+});
+$('mzPick').addEventListener('change',crtajMZ);
+$('mzShow').addEventListener('click',function(){
+  postaviMZ($('mzPick').value);
+  $('dlgMZ').close();
+  $('sheet').classList.add('open'); $('sheet').setAttribute('aria-hidden','false');
+});
+
 $('btnStats').addEventListener('click',function(){
   var html='<button class="stat total" data-f=""><span class="nm">Ukupno svjetiljki</span><b>'+lamps.length+'</b></button>';
   html+=REDCI.map(function(r){
@@ -1233,6 +1524,7 @@ function publish(){
     if(!d){ throw new Error('oblik'); }
     if(!d.ok){ alert(objasni(d.greska)); throw new Error(d.greska||''); }
     lamps.forEach(function(l){ delete l.cekanje; });
+    try{ localStorage.setItem(KEY_VRIJEME,new Date().toISOString()); }catch(e){}
     dirty=false; try{ localStorage.removeItem(KEY_DIRTY); }catch(e){}
     save(); draw();
     toast('Objavljeno: '+plural(d.broj||lamps.length));
@@ -1317,6 +1609,21 @@ $('btnPull').addEventListener('click',function(){ pull(true); });
 $('btnBoundary').addEventListener('click',function(){ loadBoundary(true); });
 
 (function(){
+  /* baza iz datoteke podaci.js ima prednost pred lokalnom kopijom
+     ako je novija i ako nema neobjavljenih izmjena */
+  var P=window.PODACI;
+  if(P && Array.isArray(P.svjetiljke) && !dirty){
+    var lok=''; try{ lok=localStorage.getItem(KEY_VRIJEME)||''; }catch(e){}
+    if(!lamps.length || String(P.vrijeme||'')>lok){
+      lamps=P.svjetiljke;
+      if(Array.isArray(P.korisnici) && P.korisnici.length) users=P.korisnici;
+      try{
+        localStorage.setItem(KEY_VRIJEME,String(P.vrijeme||''));
+        localStorage.setItem(KEY_ADMIN,JSON.stringify(users));
+      }catch(e){}
+      save();
+    }
+  }
   var s=null; try{ s=localStorage.getItem(KEY_SESSION); }catch(e){}
   postaviUlogu(s?nadjiKorisnika(s):null);
 })();
