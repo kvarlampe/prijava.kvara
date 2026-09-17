@@ -399,6 +399,11 @@ textarea{min-height:82px;resize:vertical}
   <div class="d-body">
     <select id="mzPick"></select>
     <div id="mzBox" style="margin-top:14px"></div>
+    <p class="note" id="mzIzvor"></p>
+    <div class="edit-only" style="display:flex;gap:10px;margin-top:10px">
+      <button class="btn-quiet" id="mzAuto" style="flex:1;padding:12px;border-radius:9px;font-weight:600">Dodijeli svima automatski</button>
+      <button class="btn-quiet" id="mzRefresh" style="flex:1;padding:12px;border-radius:9px;font-weight:600">Osvježi granice</button>
+    </div>
   </div>
   <div class="d-foot">
     <button class="btn-quiet" data-close>Zatvori</button>
@@ -494,7 +499,7 @@ textarea{min-height:82px;resize:vertical}
     <input type="text" id="apiUrl" placeholder="upisana u datoteci — ostavi prazno">
     <label for="apiKey">Ključ za objavu svjetiljki</label>
     <input type="password" id="apiKey" placeholder="isti ključ kao u skripti">
-    <p class="note">Tajni ključ za objavu popisa. Ostaje samo na ovom uređaju. Ako ga ostaviš prazno, koristi se ključ iz datoteke.</p>
+    <p class="note">To je KLJUC_OBJAVA iz skripte, različit od ključa u datoteci. Ostaje samo na ovom uređaju i bez njega objava ne radi.</p>
     <p class="note">Svjetiljke su spremljene samo na ovom uređaju. Redovito napravi sigurnosnu kopiju.</p>
     <div style="display:flex;gap:10px;margin-top:12px">
       <button class="btn-quiet" id="btnExport" style="flex:1;padding:12px;border-radius:9px;font-weight:600">Spremi kopiju</button>
@@ -545,11 +550,14 @@ var MAIL_DEFAULT='info@komunalno.ba';
    ========================================================================== */
 var SERVER = 'https://script.google.com/macros/s/AKfycbzXRhyZILrtwe-S411HdGiANGAuAwW-FibH_eYnIJyq7VIhAjnb2ob74UBzL4bChhfDNg/exec';
 
-/* Ključ za prijave. Upiši ovdje isti KLJUC koji stoji u skripti.
-   Time prijave rade odmah, bez ponovnog objavljivanja skripte.
-   Pazi: ovaj ključ mogu pročitati svi koji otvore izvorni kod stranice,
-   pa za objavu popisa svjetiljki koristi drugi, tajni ključ (Postavke). */
-var KLJUC = 'rgyth7SbTADXjD5A2ize';
+/* ==========================================================================
+   OVDJE ide SAMO ključ za prijave — u skripti je to KLJUC_PRIJAVE.
+   Njega smiju vidjeti svi; bez njega nitko ne može prijaviti kvar.
+
+   Ključ za objavu popisa (KLJUC_OBJAVA iz skripte) NIKADA ne ide ovdje.
+   Njega administrator upisuje u aplikaciji: Postavke → „Ključ za objavu“.
+   ========================================================================== */
+var KLJUC_PRIJAVE = 'rgyth7SbTADXjD5A2izeXX12';
 var OSM_ID='R2528143'; /* OpenStreetMap relacija: Brčko distrikt */
 
 /* Gruba okvirna granica — koristi se dok se prava granica ne učita */
@@ -602,6 +610,169 @@ function plural(n){
   if(d===1 && dd!==11) return n+' svjetiljka';
   if(d>=2 && d<=4 && !(dd>=12 && dd<=14)) return n+' svjetiljke';
   return n+' svjetiljki';
+}
+
+
+/* ---------- Automatsko određivanje mjesne zajednice ---------- */
+var KEY_MZGEO='lampenkarte.mzgranice';
+var KEY_MZTOCKE='lampenkarte.mztocke';
+var OVERPASS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
+var MZ_POLY=null;   /* granice mjesnih zajednica */
+var MZ_TOCKE=null;  /* središta naselja kao zamjena */
+var MZ_IZVOR='—';
+
+function norm(s){
+  return String(s||'').toLowerCase()
+    .replace(/[čć]/g,'c').replace(/đ/g,'d').replace(/š/g,'s').replace(/ž/g,'z')
+    .replace(/mjesna zajednica/g,'').replace(/\bmz\b/g,'')
+    .replace(/[^a-z0-9]+/g,' ').trim();
+}
+var MZ_NORM={};
+MZ.forEach(function(m){ MZ_NORM[norm(m)]=m; });
+function mzPoImenu(n){ return MZ_NORM[norm(n)] || null; }
+
+function blizu(a,b){ return Math.abs(a[0]-b[0])<1e-7 && Math.abs(a[1]-b[1])<1e-7; }
+
+function okomito(p,a,b){
+  var y=p[0]-a[0], x=p[1]-a[1], dy=b[0]-a[0], dx=b[1]-a[1];
+  var t=dx*dx+dy*dy;
+  if(!t) return Math.sqrt(x*x+y*y);
+  var u=Math.max(0,Math.min(1,(x*dx+y*dy)/t));
+  var cx=x-u*dx, cy=y-u*dy;
+  return Math.sqrt(cx*cx+cy*cy);
+}
+function pojednostavi(pts,eps){
+  if(pts.length<4) return pts;
+  var dmax=0, idx=0;
+  for(var i=1;i<pts.length-1;i++){
+    var d=okomito(pts[i],pts[0],pts[pts.length-1]);
+    if(d>dmax){ dmax=d; idx=i; }
+  }
+  if(dmax>eps){
+    var a=pojednostavi(pts.slice(0,idx+1),eps);
+    var b=pojednostavi(pts.slice(idx),eps);
+    return a.slice(0,-1).concat(b);
+  }
+  return [pts[0],pts[pts.length-1]];
+}
+
+function prsteniIzRelacije(rel){
+  var segs=[];
+  (rel.members||[]).forEach(function(m){
+    if(m.type!=='way' || !m.geometry) return;
+    if(m.role && m.role!=='outer') return;
+    segs.push(m.geometry.map(function(g){ return [g.lat,g.lon]; }));
+  });
+  var rings=[], cur=null, guard=0;
+  while(segs.length && guard++<20000){
+    if(!cur){ cur=segs.shift(); continue; }
+    var kraj=cur[cur.length-1], nasao=false;
+    for(var i=0;i<segs.length;i++){
+      var s=segs[i];
+      if(blizu(kraj,s[0])){ cur=cur.concat(s.slice(1)); segs.splice(i,1); nasao=true; break; }
+      if(blizu(kraj,s[s.length-1])){ cur=cur.concat(s.slice().reverse().slice(1)); segs.splice(i,1); nasao=true; break; }
+    }
+    if(!nasao || blizu(cur[0],cur[cur.length-1])){ rings.push(cur); cur=null; }
+  }
+  if(cur) rings.push(cur);
+  return rings.filter(function(r){ return r.length>3; });
+}
+
+function okvir(rings){
+  var s=90,w=180,n=-90,e=-180;
+  rings.forEach(function(r){ r.forEach(function(t){
+    if(t[0]<s)s=t[0]; if(t[0]>n)n=t[0]; if(t[1]<w)w=t[1]; if(t[1]>e)e=t[1];
+  });});
+  return [s,w,n,e];
+}
+
+function upitOverpass(upit, i){
+  i=i||0;
+  if(i>=OVERPASS.length) return Promise.reject();
+  return fetch(OVERPASS[i],{method:'POST',body:'data='+encodeURIComponent(upit),
+    headers:{'Content-Type':'application/x-www-form-urlencoded'}})
+    .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+    .catch(function(){ return upitOverpass(upit,i+1); });
+}
+
+function spremiMZ(){
+  try{ localStorage.setItem(KEY_MZGEO,JSON.stringify(MZ_POLY)); }
+  catch(e){ /* preveliko za pohranu — ostaje samo za ovu sesiju */ }
+}
+
+function dohvatiGraniceMZ(rucno){
+  var upit='[out:json][timeout:120];rel('+OSM_ID.slice(1)+');map_to_area->.a;'+
+           'rel(area.a)["boundary"="administrative"]["admin_level"~"^(8|9|10)$"];out geom;';
+  return upitOverpass(upit).then(function(d){
+    var out=[];
+    (d.elements||[]).forEach(function(rel){
+      var ime=mzPoImenu((rel.tags&&(rel.tags.name||rel.tags.official_name))||'');
+      if(!ime) return;
+      var rings=prsteniIzRelacije(rel).map(function(r){ return pojednostavi(r,0.00004); });
+      if(!rings.length) return;
+      out.push({ime:ime, rings:rings, bbox:okvir(rings)});
+    });
+    if(!out.length) throw 0;
+    MZ_POLY=out; MZ_IZVOR='granice iz OpenStreetMapa ('+out.length+' MZ)';
+    spremiMZ();
+    if(rucno) toast('Učitane granice za '+out.length+' mjesnih zajednica');
+    return out;
+  });
+}
+
+function dohvatiTockeMZ(rucno){
+  var upit='[out:json][timeout:60];rel('+OSM_ID.slice(1)+');map_to_area->.a;'+
+           'node(area.a)["place"];out;';
+  return upitOverpass(upit).then(function(d){
+    var out=[];
+    (d.elements||[]).forEach(function(nd){
+      var ime=mzPoImenu(nd.tags&&nd.tags.name);
+      if(!ime) return;
+      out.push({ime:ime, lat:nd.lat, lng:nd.lon});
+    });
+    if(!out.length) throw 0;
+    MZ_TOCKE=out;
+    if(!MZ_POLY) MZ_IZVOR='najbliže naselje ('+out.length+' točaka)';
+    try{ localStorage.setItem(KEY_MZTOCKE,JSON.stringify(out)); }catch(e){}
+    if(rucno) toast('Učitano '+out.length+' naselja');
+    return out;
+  });
+}
+
+function pripremiMZ(rucno){
+  if(!rucno){
+    var g=load(KEY_MZGEO,null), t=load(KEY_MZTOCKE,null);
+    if(g && g.length){ MZ_POLY=g; MZ_IZVOR='granice iz OpenStreetMapa ('+g.length+' MZ)'; }
+    if(t && t.length){ MZ_TOCKE=t; if(!MZ_POLY) MZ_IZVOR='najbliže naselje ('+t.length+' točaka)'; }
+    if(MZ_POLY) return;
+  }
+  dohvatiGraniceMZ(rucno)
+    .catch(function(){ return dohvatiTockeMZ(rucno); })
+    .catch(function(){ if(rucno) toast('Podatke o mjesnim zajednicama nije moguće preuzeti'); });
+  if(!MZ_TOCKE) dohvatiTockeMZ(false).catch(function(){});
+}
+
+function odrediMZ(lat,lng){
+  if(MZ_POLY){
+    for(var i=0;i<MZ_POLY.length;i++){
+      var p=MZ_POLY[i], b=p.bbox;
+      if(lat<b[0]||lat>b[2]||lng<b[1]||lng>b[3]) continue;
+      for(var r=0;r<p.rings.length;r++){
+        if(inRing(lat,lng,p.rings[r])) return p.ime;
+      }
+    }
+  }
+  if(MZ_TOCKE && MZ_TOCKE.length){
+    var naj=null, najd=Infinity;
+    for(var k=0;k<MZ_TOCKE.length;k++){
+      var t=MZ_TOCKE[k];
+      var dy=(t.lat-lat), dx=(t.lng-lng)*Math.cos(lat*Math.PI/180);
+      var d=dy*dy+dx*dx;
+      if(d<najd){ najd=d; naj=t.ime; }
+    }
+    if(naj && Math.sqrt(najd)*111 < 6) return naj;
+  }
+  return '';
 }
 
 /* ---------- Karta ---------- */
@@ -778,6 +949,7 @@ function draw(){
       var pos=m.getLatLng();
       if(!inBrcko(pos.lat,pos.lng)){ m.setLatLng([l.lat,l.lng]); toast('Izvan Brčko distrikta'); return; }
       l.lat=pos.lat; l.lng=pos.lng; l.tocnost=0;
+      if(!l.mz) l.mz=odrediMZ(l.lat,l.lng);
       touch(); save(); renderList();
       toast(l.name+' pomaknuta na '+fmt(l.lat)+', '+fmt(l.lng));
     });
@@ -802,6 +974,7 @@ function addLamp(lat,lng,acc){
   if(!inBrcko(lat,lng)){ toast('Ta točka je izvan Brčko distrikta'); return; }
   var l={ id:'x'+Date.now().toString(36), name:nextName(), street:'', lat:lat, lng:lng, status:'ok', created:new Date().toISOString() };
   if(acc) l.tocnost=Math.round(acc);
+  l.mz=odrediMZ(lat,lng);
   if(!isAdmin) l.cekanje=true;
   lamps.push(l); touch(); save(); draw();
   map.panTo([lat,lng]);
@@ -1120,7 +1293,7 @@ function openMailto(){
 }
 
 function objasni(g){
-  if(g==='kljuc') return 'Poslužitelj je odbio prijavu (greška: kljuc).\n\nKljuč u stranici i ključ u skripti nisu isti.\n\nProvjeri var KLJUC pri vrhu HTML datoteke — mora biti slovo po slovo jednak onome u skripti.';
+  if(g==='kljuc') return 'Poslužitelj je odbio prijavu (greška: kljuc).\n\nU datoteci mora stajati ključ za PRIJAVE, a ne onaj za objavu.\n\nProvjeri var KLJUC_PRIJAVE pri vrhu HTML datoteke — mora biti jednak vrijednosti KLJUC_PRIJAVE u skripti.';
   if(g==='limit')  return 'Poslano je previše prijava u zadnjih sat vremena.\n\nPokušaj kasnije ili povećaj MAX_NA_SAT u skripti.';
   if(g==='prazno') return 'Prijava je stigla prazna. Napiši kratku napomenu i pokušaj ponovno.';
   return 'Poslužitelj javlja grešku: '+(g||'nepoznato');
@@ -1133,7 +1306,7 @@ function sendAuto(){
   fetch(srv(),{
     method:'POST',
     headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body:JSON.stringify({kljuc:KLJUC, vrsta:reportKind, predmet:m.subject, tijelo:m.body})
+    body:JSON.stringify({kljuc:KLJUC_PRIJAVE, vrsta:reportKind, predmet:m.subject, tijelo:m.body})
   })
   .then(function(r){ return r.text(); })
   .then(function(t){
@@ -1414,9 +1587,31 @@ $('btnMZ').addEventListener('click',function(){
     MZ.map(function(m){ return '<option value="'+esc(m)+'">'+esc(m)+' ('+uMZ(m).length+')</option>'; }).join('');
   sel.value=filtarMZ||'';
   crtajMZ();
+  $('mzIzvor').textContent='Izvor: '+MZ_IZVOR+'. Svjetiljke bez MZ: '+lamps.filter(function(l){ return !l.mz; }).length;
   $('dlgMZ').showModal();
 });
 $('mzPick').addEventListener('change',crtajMZ);
+$('mzRefresh').addEventListener('click',function(){
+  toast('Preuzimam granice mjesnih zajednica …');
+  pripremiMZ(true);
+  setTimeout(function(){ $('mzIzvor').textContent='Izvor: '+MZ_IZVOR; },4000);
+});
+$('mzAuto').addEventListener('click',function(){
+  if(!canEdit) return;
+  if(!MZ_POLY && !MZ_TOCKE){ toast('Prvo pritisni „Osvježi granice“'); return; }
+  var n=0;
+  lamps.forEach(function(l){
+    if(l.mz) return;
+    var m=odrediMZ(l.lat,l.lng);
+    if(m){ l.mz=m; n++; }
+  });
+  if(!n){ toast('Nema svjetiljki kojima se može dodijeliti MZ'); return; }
+  touch(); save(); draw();
+  toast('Dodijeljeno: '+n+' svjetiljki');
+  var sel=$('mzPick').value;
+  $('btnMZ').click();
+  $('mzPick').value=sel; crtajMZ();
+});
 $('mzShow').addEventListener('click',function(){
   postaviMZ($('mzPick').value);
   $('dlgMZ').close();
@@ -1459,7 +1654,7 @@ $('supSend').addEventListener('click',function(){
   if(!srv()){ mailtoNa(SUPPORT_MAIL,predmet,tijelo); $('dlgSupport').close(); return; }
   btn.disabled=true; btn.textContent='Šaljem …';
   fetch(srv(),{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body:JSON.stringify({kljuc:KLJUC, vrsta:'podrska', predmet:predmet, tijelo:tijelo})})
+    body:JSON.stringify({kljuc:KLJUC_PRIJAVE, vrsta:'podrska', predmet:predmet, tijelo:tijelo})})
   .then(function(r){ return r.text(); })
   .then(function(x){
     var d=null; try{ d=JSON.parse(x); }catch(e){}
@@ -1512,17 +1707,32 @@ function pull(rucno){
 function publish(){
   if(!isAdmin){ toast('Objaviti može samo administrator'); return; }
   if(!srv()){ toast('Adresa poslužitelja nije upisana'); return; }
+  if(!cfg.key){
+    alert('Nedostaje ključ za objavu.\n\n'+
+          'Upiši ga u Postavke → „Ključ za objavu svjetiljki“. To je KLJUC_OBJAVA iz skripte, '+
+          'i namjerno se razlikuje od ključa u datoteci.');
+    return;
+  }
   var btn=$('btnPublish');
   btn.disabled=true; btn.textContent='Objavljujem …';
   fetch(srv(),{
     method:'POST',
     headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body:JSON.stringify({kljuc:cfg.key||KLJUC, vrsta:'objava', svjetiljke:lamps, korisnici:users, potvrda:true})
+    body:JSON.stringify({kljuc:cfg.key, vrsta:'objava', svjetiljke:lamps, korisnici:users, potvrda:true})
   })
   .then(function(r){ return r.json(); })
   .then(function(d){
     if(!d){ throw new Error('oblik'); }
-    if(!d.ok){ alert(objasni(d.greska)); throw new Error(d.greska||''); }
+    if(!d.ok){
+      if(d.greska==='kljuc'){
+        alert('Poslužitelj je odbio objavu (greška: kljuc).\n\n'+
+              'Ključ iz Postavki ne odgovara vrijednosti KLJUC_OBJAVA u skripti.\n\n'+
+              'Provjeri Postavke → „Ključ za objavu svjetiljki“. Ključ iz datoteke ovdje ne vrijedi — on služi samo za prijave.');
+      } else {
+        alert(objasni(d.greska));
+      }
+      throw new Error(d.greska||'');
+    }
     lamps.forEach(function(l){ delete l.cekanje; });
     try{ localStorage.setItem(KEY_VRIJEME,new Date().toISOString()); }catch(e){}
     dirty=false; try{ localStorage.removeItem(KEY_DIRTY); }catch(e){}
@@ -1568,7 +1778,7 @@ $('btnPropose').addEventListener('click',function(){
     '\n\n--- podaci za uvoz (kopiraj cijeli blok) ---\n'+JSON.stringify(novi)+'\n';
   if(!srv()){ mailtoNa(SUPPORT_MAIL,predmet,tijelo); return; }
   fetch(srv(),{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body:JSON.stringify({kljuc:KLJUC, vrsta:'podrska', predmet:predmet, tijelo:tijelo})})
+    body:JSON.stringify({kljuc:KLJUC_PRIJAVE, vrsta:'podrska', predmet:predmet, tijelo:tijelo})})
   .then(function(r){ return r.text(); })
   .then(function(x){
     var d=null; try{ d=JSON.parse(x); }catch(e){}
@@ -1629,6 +1839,7 @@ $('btnBoundary').addEventListener('click',function(){ loadBoundary(true); });
 })();
 draw();
 loadBoundary(false);
+pripremiMZ(false);
 pull(false);
 if(lamps.length){
   map.fitBounds(lamps.map(function(l){ return [l.lat,l.lng]; }),{padding:[60,60]});
