@@ -548,7 +548,7 @@ var MAIL_DEFAULT='info@komunalno.ba';
    Ona nije tajna — svi korisnici je trebaju da bi vidjeli svjetiljke
    i slali prijave. Tajni ključ za objavu NE ide ovdje.
    ========================================================================== */
-var SERVER = 'https://script.google.com/macros/s/AKfycbyEyhmwo46upuC9F3n9Xs7IewrSuynmf3nJdYL2hUqcFYHBNt4_Crap2mzlJ3NOhUMGcA/exec';
+var SERVER = 'https://script.google.com/macros/s/AKfycbzXRhyZILrtwe-S411HdGiANGAuAwW-FibH_eYnIJyq7VIhAjnb2ob74UBzL4bChhfDNg/exec';
 
 /* ==========================================================================
    OVDJE ide SAMO ključ za prijave — u skripti je to KLJUC_PRIJAVE.
@@ -627,9 +627,15 @@ function norm(s){
     .replace(/mjesna zajednica/g,'').replace(/\bmz\b/g,'')
     .replace(/[^a-z0-9]+/g,' ').trim();
 }
-var MZ_NORM={};
-MZ.forEach(function(m){ MZ_NORM[norm(m)]=m; });
-function mzPoImenu(n){ return MZ_NORM[norm(n)] || null; }
+var MZ_NORM=null;
+function mzKazalo(){
+  if(!MZ_NORM){
+    MZ_NORM={};
+    MZ.forEach(function(m){ MZ_NORM[norm(m)]=m; });
+  }
+  return MZ_NORM;
+}
+function mzPoImenu(n){ return mzKazalo()[norm(n)] || null; }
 
 function blizu(a,b){ return Math.abs(a[0]-b[0])<1e-7 && Math.abs(a[1]-b[1])<1e-7; }
 
